@@ -1,0 +1,207 @@
+# 🎯 AI 면접 코치 (AI Interview Coach)
+
+> **"점수만 주는 평가자가 아니라, 이유를 설명하고 회차별 성장을 추적하는 학생용 코치."**
+
+웹캠과 마이크만 있으면, 집에서 혼자 **실전 같은 모의면접**을 연습할 수 있는 오픈소스 프로그램입니다.
+자세·표정·음성·답변 내용을 동시에 분석하고, **왜 그런 평가인지 한국어로 설명**하며, 회차별 성장을 그래프로 보여줍니다.
+
+전부 **무료·오픈소스 도구**(YOLO, MediaPipe, Whisper, Ollama)로 동작하며, **API 비용이 들지 않습니다.**
+
+---
+
+## ✨ 주요 기능
+
+| 기능 | 설명 |
+|------|------|
+| 🎤 **5문항 연속 모의면접** | 실제 면접처럼 여러 질문을 연달아 진행하고 종합 리포트 제공 |
+| 💼 **직무별 맞춤 질문** | 지원 직무를 입력하면 그 직무에 맞는 전문 질문 출제 (개발·마케팅·영업·디자인·경영사무 + AI 생성) |
+| 📊 **난이도 조절 (하/중/상)** | 자기소개 다음 질문들의 수준을 기초·실무·심화로 선택 |
+| 🔥 **꼬리질문 (상 난이도)** | 답변을 듣고 그 내용을 파고드는 추가 질문을 실시간 생성 (압박 면접 대비) |
+| 🧍 **자세·표정 실시간 분석** | YOLO Pose + MediaPipe로 어깨·고개·시선·표정을 분석하고 즉시 코칭 |
+| 🗣️ **음성 인식 (STT)** | Whisper로 답변을 텍스트로 변환 (한국어) |
+| 🧠 **답변 내용 평가** | 논리성·구체성·직무적합도를 점수화하고, **"왜 이 점수인지" 한국어로 설명** |
+| ✍️ **모범 답안 자동 생성** | 내 답변을 살려 더 나은 버전으로 개선 |
+| 📈 **회차별 성장 추적** | 면접 점수를 저장하고 학습 곡선 그래프로 시각화 |
+| 📄 **HTML 결과 리포트** | 면접 결과를 예쁜 웹페이지로 저장 (브라우저에서 열람) |
+
+---
+
+## 🗂️ 파일 구조
+
+```
+ai-interview-coach/
+├─ mock_interview.py      # 🚀 메인 실행 파일 (전체 모의면접 진행)
+├─ question_bank.py       # 직무별·난이도별 질문 은행
+├─ content_evaluator.py   # 답변 내용 평가 (Ollama 기반)
+├─ vision_analyzer.py     # 자세·표정 단독 분석 (테스트용)
+├─ growth_tracker.py      # 회차별 성장 추적 + 그래프
+├─ report_generator.py    # HTML 결과 리포트 생성
+└─ stt_test.py            # 음성 인식 단독 테스트용
+```
+
+> 평소엔 **`mock_interview.py` 하나만 실행**하면 됩니다. 나머지는 자동으로 불려서 함께 동작합니다.
+> `vision_analyzer.py`와 `stt_test.py`는 각 기능을 따로 점검하고 싶을 때 쓰는 테스트 파일입니다.
+
+---
+
+## 💻 설치 방법
+
+### 0. 사전 준비물
+- **Python 3.10** (권장)
+- **웹캠**과 **마이크**
+- 인터넷 연결 (최초 1회 모델 다운로드용)
+
+### 1. 파이썬 라이브러리 설치
+
+터미널(Windows는 PowerShell)에서 아래를 실행합니다.
+
+```bash
+pip install ultralytics opencv-python mediapipe pillow numpy openai-whisper sounddevice scipy matplotlib ollama
+```
+
+> ⚠️ `ultralytics`와 `openai-whisper`는 내부적으로 PyTorch를 받기 때문에 용량이 큽니다(수백 MB~1GB). 설치가 오래 걸려도 끝까지 기다려 주세요.
+
+### 2. FFmpeg 설치 (음성 인식에 필요)
+
+Whisper가 내부적으로 FFmpeg을 사용합니다.
+
+**Windows (가장 간단):**
+```powershell
+winget install ffmpeg
+```
+설치 후 **터미널을 닫고 새로 연 뒤** 확인:
+```powershell
+ffmpeg -version
+```
+`ffmpeg version ...`이 나오면 성공입니다.
+
+> macOS는 `brew install ffmpeg`, Ubuntu는 `sudo apt install ffmpeg`.
+
+### 3. Ollama 설치 (답변 내용 평가 + 꼬리질문에 필요)
+
+[https://ollama.com](https://ollama.com) 에서 설치 파일을 받아 설치합니다.
+
+설치 후 터미널을 **새로 열고** 모델을 다운로드합니다.
+
+```bash
+ollama pull qwen2.5:7b
+```
+
+> 한국어를 잘 처리하는 모델입니다(약 4~5GB). 컴퓨터 사양이 낮다면 `ollama pull qwen2.5:3b`(약 2GB)로 받고,
+> `content_evaluator.py`의 `DEFAULT_MODEL` 값을 `"qwen2.5:3b"`로 바꾸세요.
+
+설치 확인:
+```bash
+ollama --version
+ollama list      # qwen2.5:7b 가 보이면 OK
+```
+
+---
+
+## ▶️ 실행 방법
+
+1. **Ollama가 실행 중인지 확인**합니다 (작업표시줄의 라마 아이콘).
+2. 모든 `.py` 파일이 **같은 폴더**에 있는지 확인합니다.
+3. 터미널에서 해당 폴더로 이동한 뒤 실행합니다.
+
+```bash
+python mock_interview.py
+```
+
+### 진행 순서
+1. **지원 직무 입력** (예: `백엔드 개발자`. 그냥 Enter 시 일반 직무)
+2. **난이도 선택** (1.하 / 2.중 / 3.상)
+3. 각 질문마다: **5초 준비** → 답변하는 동안 자세·표정 분석 + 음성 녹음 → 답변이 끝나면 **`q` 키**
+4. 5문항 종료 후 **종합 리포트** 출력 + **HTML 리포트**가 브라우저에 자동으로 열림
+5. 점수가 저장되어 **성장 곡선**(`growth_curve.png`)이 갱신됨
+
+> 면접 도중 그만두려면 카메라 창에서 **`ESC` 키**를 누르세요. 거기까지의 결과로 리포트가 만들어집니다.
+
+---
+
+## ⚙️ 설정 바꾸기
+
+`mock_interview.py` 상단의 값들을 바꿔 커스터마이징할 수 있습니다.
+
+| 설정값 | 기본값 | 설명 |
+|--------|--------|------|
+| `NUM_QUESTIONS` | `5` | 한 세션의 문항 수 |
+| `COUNTDOWN_SEC` | `5` | 답변 전 준비 시간(초) |
+| `WHISPER_MODEL` | `"medium"` | 음성 인식 모델. 정확도순: `tiny < base < small < medium`. 느리면 `"small"`로 낮추세요 |
+| `MAX_ONSCREEN_ISSUES` | `3` | 화면에 동시에 표시할 자세 문제 개수 |
+
+---
+
+## 🧩 만들어지는 파일들
+
+| 파일 | 설명 |
+|------|------|
+| `growth_curve.png` | 회차별 성장 곡선 그래프 |
+| `interview_history.json` | 회차별 점수 기록 (텍스트) |
+| `report_YYYYMMDD_HHMMSS.html` | 면접 회차별 결과 리포트 |
+
+---
+
+## 🔧 문제 해결 (Troubleshooting)
+
+설치·실행 중 자주 만나는 문제와 해결법입니다.
+
+### `ollama: 명령을 찾을 수 없습니다`
+Ollama 설치 직후 기존 터미널은 이를 인식하지 못합니다. **터미널을 닫고 새로 여세요.** 그래도 안 되면 컴퓨터를 재부팅하세요.
+
+### `ffmpeg`을 찾을 수 없다는 오류
+FFmpeg 설치 후 **반드시 새 터미널**에서 실행해야 합니다. `ffmpeg -version`으로 먼저 확인하세요.
+
+### `module 'mediapipe' has no attribute 'solutions'`
+mediapipe 설치가 불완전한 경우입니다. 아래로 재설치하세요.
+```bash
+pip uninstall mediapipe -y
+pip install "mediapipe==0.10.21"
+```
+
+### numpy 버전 충돌 경고
+mediapipe와 opencv가 서로 다른 numpy 버전을 요구해 생기는 경고입니다.
+보통 **numpy 1.26.x 에서 모두 정상 동작**하므로, 경고가 떠도 실행에 문제가 없으면 무시해도 됩니다.
+
+### `CUDA error` (답변 평가 중)
+그래픽카드(GPU) 메모리 문제로 Ollama가 실패하는 경우입니다.
+이 프로그램은 **CUDA 오류 감지 시 자동으로 CPU 모드로 다시 시도**하도록 되어 있어, 보통 그대로 평가가 진행됩니다.
+계속 문제가 되면 `WHISPER_MODEL`을 `"small"`로 낮춰 GPU 부담을 줄이세요.
+
+### 음성 인식이 부정확함
+- 조용한 곳에서, 마이크에 가까이, 또박또박 말하세요.
+- `WHISPER_MODEL`을 더 큰 모델(`"medium"`)로 올리면 정확해집니다(대신 느려짐).
+- 내장 마이크보다 이어폰 마이크가 더 잘 잡히는 경우가 많습니다.
+
+### 한글이 깨져 보임 (□□□)
+화면·그래프의 한글 출력은 **맑은 고딕(malgun.ttf)** 폰트를 사용합니다.
+Windows에는 기본 설치되어 있어 대부분 정상이지만, 없을 경우 폰트 경로를 코드에서 조정해야 합니다.
+
+### 프로그램이 메시지 없이 바로 종료됨
+파일이 깨진 인코딩으로 저장됐을 수 있습니다. 파일은 **UTF-8**로 저장되어야 합니다.
+
+---
+
+## 🛠️ 사용 기술
+
+- **[YOLO Pose](https://github.com/ultralytics/ultralytics)** (Ultralytics) — 실시간 자세(관절) 인식
+- **[MediaPipe](https://developers.google.com/mediapipe)** (Google) — 얼굴 표정·시선 분석
+- **[Whisper](https://github.com/openai/whisper)** (OpenAI) — 음성 → 텍스트 변환
+- **[Ollama](https://ollama.com)** + Qwen2.5 — 로컬 LLM 기반 답변 평가·질문 생성
+- **OpenCV / Pillow / Matplotlib** — 영상 처리 및 시각화
+
+---
+
+## 📜 라이선스 / 목적
+
+학생들이 **무료로** 면접을 연습할 수 있도록 만든 비상업적 오픈소스 프로젝트입니다.
+기존 면접 서비스가 유료이거나 기업용(B2B)인 시장에서, 취업을 준비하는 학생을 위한 빈자리를 채우는 것을 목표로 합니다.
+
+> ⚠️ 사용된 일부 모델·라이브러리는 각자의 라이선스(예: Ultralytics YOLO는 AGPL-3.0)를 따릅니다.
+> 공개·배포 시 각 라이브러리의 라이선스를 확인하세요.
+
+---
+
+## 🙌 기여
+
+버그 제보나 기능 제안은 Issue로, 코드 기여는 Pull Request로 환영합니다.
