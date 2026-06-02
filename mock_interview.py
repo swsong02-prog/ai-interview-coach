@@ -156,6 +156,7 @@ ISSUE_LABELS = {
     "too_far": "카메라와 너무 멀어요",
     "head_down": "고개가 떨어졌어요",
     "stiff_face": "표정이 굳어 있어요",
+    "fake_smile": "입만 웃는 어색한 미소예요",
     "gaze_away": "시선이 정면을 벗어났어요",
 }
 SHORT_TIPS = {
@@ -167,6 +168,7 @@ SHORT_TIPS = {
     "too_far": "조금 앞으로 다가오세요",
     "head_down": "고개를 들고 시선을 위로",
     "stiff_face": "살짝 미소를 지어보세요",
+    "fake_smile": "눈도 함께 웃어보세요",
     "gaze_away": "카메라에 시선을 두세요",
 }
 ISSUE_TIPS = {
@@ -178,10 +180,11 @@ ISSUE_TIPS = {
     "too_far": "카메라에 조금 더 가까이 앉으세요.",
     "head_down": "고개를 들고 시선을 정면으로 향하세요.",
     "stiff_face": "면접에서는 자연스러운 미소가 호감을 줍니다. 너무 굳지 않게 연습하세요.",
+    "fake_smile": "입꼬리만 올리면 어색해 보입니다. 눈가까지 자연스럽게 풀어 진짜 미소를 지어보세요.",
     "gaze_away": "답변 중에도 카메라(면접관)에 시선을 두는 연습을 하세요.",
 }
 ISSUE_PRIORITY = [
-    "head_down", "not_facing", "gaze_away", "stiff_face",
+    "head_down", "not_facing", "gaze_away", "stiff_face", "fake_smile",
     "shoulder_tilt", "head_tilt", "off_center", "too_close", "too_far",
 ]
 
@@ -222,6 +225,7 @@ class MockInterview:
         self._eye_was_closed = False
         self._blink_count = 0
         self._expr_history = deque(maxlen=EXPR_SMOOTH_FRAMES)
+        self._ear_samples = deque(maxlen=150)   # 평소 눈 크기 기준선용(최근 프레임)
 
     def _load_font(self, size):
         if not PIL_OK:
@@ -243,6 +247,7 @@ class MockInterview:
         self._eye_was_closed = False
         self._blink_count = 0
         self._expr_history.clear()
+        self._ear_samples.clear()   # 평소 눈 크기(EAR) 기준선 표본
         self._audio_chunks = []
         # 큐 비우기
         while not self._audio_q.empty():
@@ -339,19 +344,8 @@ class MockInterview:
         smile_ratio = (((m_top[1] + m_bot[1]) / 2.0) - ((m_left[1] + m_right[1]) / 2.0)) / face_w
         mouth_open = (m_bot[1] - m_top[1]) / face_w
         talking = mouth_open > MOUTH_OPEN_TALKING
-        if talking:
-            instant_expr = "무표정"
-        elif smile_ratio > 0.015:
-            instant_expr = "밝음"
-        elif smile_ratio > -0.025:
-            instant_expr = "무표정"
-        else:
-            instant_expr = "굳음"
-        self._expr_history.append(instant_expr)
-        expression = max(set(self._expr_history), key=self._expr_history.count)
-        if expression == "굳음" and len(self._expr_history) >= EXPR_SMOOTH_FRAMES // 2:
-            issues.append("stiff_face")
 
+        # ── 눈 뜬 정도(EAR) 먼저 계산: 깜빡임 + 표정 판정에 함께 사용 ──
         def eye_open_ratio(top, bot, left, right):
             v = abs(self._lm_xy(lms, top, w, h)[1] - self._lm_xy(lms, bot, w, h)[1])
             hgt = abs(self._lm_xy(lms, left, w, h)[0] - self._lm_xy(lms, right, w, h)[0]) + 1e-6
@@ -362,6 +356,45 @@ class MockInterview:
         if is_closed and not self._eye_was_closed:
             self._blink_count += 1
         self._eye_was_closed = is_closed
+
+        # ── 평소(중립) 눈 크기 기준선 추정: 깜빡임이 아닌 프레임의 EAR을 누적 평균 ──
+        # 진짜 미소는 눈가 근육이 수축해 눈이 살짝 '가늘어진다'(EAR 감소).
+        # 입만 웃고 눈은 그대로면 '어색한 미소'로 본다.
+        if not is_closed and 0.18 <= ear <= 0.45:
+            self._ear_samples.append(ear)
+        if self._ear_samples:
+            ear_baseline = sum(self._ear_samples) / len(self._ear_samples)
+        else:
+            ear_baseline = 0.30  # 표본 모이기 전 기본값
+
+        # 눈가가 자연스럽게 좁아졌는지(진짜 미소 신호). 기준선 대비 5% 이상 감소.
+        eyes_engaged = (not is_closed) and (ear < ear_baseline * 0.95)
+        # 눈을 과하게 부릅뜸(놀람/긴장) 또는 과하게 찡그림(어색) 감지
+        eyes_wide = ear > ear_baseline * 1.25
+        eyes_squint = (not is_closed) and (ear < ear_baseline * 0.65)
+
+        # ── 표정 판정: 입 + 눈을 함께 본다 ──
+        if talking:
+            instant_expr = "무표정"          # 말하는 중엔 표정 판정 보류
+        elif smile_ratio > 0.015:
+            # 입꼬리가 올라감 → 눈이 따라오는지 확인
+            if eyes_squint:
+                instant_expr = "어색"        # 입은 웃는데 눈을 찡그림 → 부자연
+            elif eyes_engaged:
+                instant_expr = "밝음"        # 입+눈 모두 웃음 → 진짜 미소
+            else:
+                instant_expr = "어색"        # 입만 웃고 눈은 그대로 → 가짜 미소
+        elif smile_ratio > -0.025:
+            instant_expr = "굳음" if eyes_wide else "무표정"
+        else:
+            instant_expr = "굳음"
+
+        self._expr_history.append(instant_expr)
+        expression = max(set(self._expr_history), key=self._expr_history.count)
+        if expression == "굳음" and len(self._expr_history) >= EXPR_SMOOTH_FRAMES // 2:
+            issues.append("stiff_face")
+        elif expression == "어색" and len(self._expr_history) >= EXPR_SMOOTH_FRAMES // 2:
+            issues.append("fake_smile")
 
         try:
             r_iris = self._lm_xy(lms, R_IRIS, w, h)
@@ -496,7 +529,7 @@ class MockInterview:
         y0 = panel_top + 8
         d.text((14, y0), f"종합 점수 {score}", font=self.font_big, fill=sc)
         ec = {"밝음": (90, 230, 120), "무표정": (255, 210, 70),
-              "굳음": (255, 120, 120)}.get(expression, (200, 200, 200))
+              "어색": (255, 170, 60), "굳음": (255, 120, 120)}.get(expression, (200, 200, 200))
         d.text((230, y0 + 4), f"표정: {expression}", font=self.font, fill=ec)
 
         if not shown:
@@ -920,14 +953,44 @@ def main():
         print("[참고] content_evaluator.py 를 못 불러와 내용 평가는 건너뜁니다.")
         print(f"        (사유: {_EVALUATOR_IMPORT_ERR})\n")
 
-    # ★ 지원 직무 입력받기 (그냥 Enter 시 '일반 직무')
-    print("\n먼저 지원할 직무를 알려주세요. 입력한 직무를 기준으로 답변을 평가합니다.")
-    print("예시: 백엔드 개발자, 프론트엔드 개발자, 마케팅, 영업, 인사, 디자이너, 간호사 등")
-    try:
-        job_input = input("▶ 지원 직무 (그냥 Enter 시 '일반 직무'): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        job_input = ""
-    job_role = job_input if job_input else "일반 직무"
+    # ★ 지원 직무 선택 (목록에서 번호로, 0번은 직접 입력)
+    job_role = "일반 직무"
+    selected_group = None   # 메뉴로 고른 직군명(매칭 우회용)
+    if QBANK_AVAILABLE:
+        menu = question_bank.get_job_menu()
+        print("\n지원할 직무 분야를 선택하세요. (입력한 직무 기준으로 질문·평가가 맞춰집니다)")
+        for i, (name, example) in enumerate(menu, start=1):
+            print(f"  {i:2d}. {name:<12s}  ({example})")
+        print("   0. 기타 (직접 입력)")
+        try:
+            sel = input("▶ 번호 선택 (그냥 Enter 시 1번): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            sel = ""
+        if sel == "0":
+            try:
+                typed = input("  지원 직무를 직접 입력하세요: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                typed = ""
+            job_role = typed if typed else "일반 직무"
+            # 직접 입력은 selected_group 없음 → 키워드 매칭/AI 생성에 맡김
+        elif sel == "":
+            selected_group = menu[0][0]
+            job_role = menu[0][0]
+        elif sel.isdigit() and 1 <= int(sel) <= len(menu):
+            selected_group = menu[int(sel) - 1][0]
+            job_role = selected_group
+        else:
+            print("  잘못된 입력입니다. 첫 번째 직군으로 진행합니다.")
+            selected_group = menu[0][0]
+            job_role = menu[0][0]
+    else:
+        # question_bank 없을 때만 자유 입력
+        print("\n먼저 지원할 직무를 알려주세요.")
+        try:
+            job_input = input("▶ 지원 직무 (그냥 Enter 시 '일반 직무'): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            job_input = ""
+        job_role = job_input if job_input else "일반 직무"
     print(f"[안내] '{job_role}' 기준으로 평가합니다.\n")
 
     # ★ 면접 난이도 입력받기 (1.하 / 2.중 / 3.상, 그냥 Enter 시 중)
@@ -942,10 +1005,48 @@ def main():
     level = {"1": "하", "2": "중", "3": "상"}.get(lv_input, "중")
     print(f"[안내] 난이도 '{level}'(으)로 진행합니다.\n")
 
-    # ★ 직무 + 난이도에 맞는 질문 구성
+    # ★ 자소서 입력 (선택): 자소서 기반 맞춤 질문 생성
+    resume_text = ""
     if QBANK_AVAILABLE:
-        questions = question_bank.build_questions(
-            job_role=job_role, level=level, n=NUM_QUESTIONS)
+        print("자기소개서를 활용하면, 자소서 내용을 바탕으로 맞춤 질문을 만들어 드립니다.")
+        print("  1. 파일 경로 입력 (.txt 또는 .docx)")
+        print("  2. 직접 붙여넣기")
+        print("  3. 사용 안 함 (직무·난이도 질문으로 진행)")
+        try:
+            rmode = input("▶ 선택 (1/2/3, 그냥 Enter 시 3): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            rmode = "3"
+        if rmode == "1":
+            try:
+                rpath = input("  자소서 파일 경로: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                rpath = ""
+            resume_text = question_bank.read_resume(rpath)
+        elif rmode == "2":
+            print("  자소서 내용을 붙여넣고, 다 넣은 뒤 빈 줄에서 Enter를 한 번 더 누르세요:")
+            lines = []
+            try:
+                while True:
+                    line = input()
+                    if line == "" and lines:   # 빈 줄 + 이미 내용 있음 → 종료
+                        break
+                    lines.append(line)
+            except (EOFError, KeyboardInterrupt):
+                pass
+            resume_text = "\n".join(lines).strip()
+        if resume_text:
+            print(f"[안내] 자소서를 받았습니다. ({len(resume_text)}자) 이 내용으로 질문을 만듭니다.\n")
+        else:
+            print("[안내] 자소서 없이 진행합니다.\n")
+
+    # ★ 질문 구성: 자소서가 있으면 자소서 기반, 없으면 직무·난이도
+    if QBANK_AVAILABLE:
+        if resume_text:
+            questions = question_bank.build_questions_from_resume(
+                resume_text, job_role=job_role, level=level, n=NUM_QUESTIONS)
+        else:
+            questions = question_bank.build_questions(
+                job_role=job_role, level=level, n=NUM_QUESTIONS, group=selected_group)
         n = len(questions)
     else:
         n = min(NUM_QUESTIONS, len(QUESTIONS))
