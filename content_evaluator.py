@@ -155,10 +155,67 @@ class ContentEvaluator:
             )
         prompt = self._build_prompt(question, answer, job_role)
         raw = self._call_model(prompt)
-        return self._parse(raw)
+        result = self._parse(raw)
+        # ★ 안전장치: 명백히 부실한 답변은 모델이 후하게 줘도 점수 상한을 낮춘다
+        result = self._apply_low_effort_guard(answer, result)
+        return result
+
+    # ── 동문서답·빈약한 답변 가드 ────────────────────────────
+    # 모델이 격려하려다 과하게 후한 점수를 주는 경우를 코드 단에서 한 번 더 보정.
+    _NON_ANSWER_PATTERNS = [
+        "없어요", "없습니다", "모르겠", "모르겠어요", "글쎄요", "잘 모르",
+        "패스", "스킵", "넘어갈", "생각 안", "생각이 안", "기억 안", "기억이 안",
+    ]
+
+    def _apply_low_effort_guard(self, answer: str, result: "EvaluationResult") -> "EvaluationResult":
+        text = (answer or "").strip()
+        # 한글/영문/숫자만 남겨 길이 측정(문장부호·공백 제외)
+        core = re.sub(r"[^0-9A-Za-z가-힣]", "", text)
+        n = len(core)
+
+        cap = None        # 점수 상한
+        note = None       # 사유 메모
+
+        low = text.replace(" ", "")
+        is_non_answer = any(p.replace(" ", "") in low for p in self._NON_ANSWER_PATTERNS) and n <= 25
+
+        if n < 6 or is_non_answer:
+            # 사실상 답을 하지 않음 → 0~15
+            cap, note = 15, "질문에 대한 실질적인 답변이 거의 없습니다."
+        elif n < 15:
+            # 매우 짧음 → 16~34 구간 상한
+            cap, note = 30, "답변이 매우 짧아 내용을 평가하기 어렵습니다."
+
+        if cap is None:
+            return result  # 가드 불필요
+
+        # 상한 적용
+        new_scores = {k: min(v, cap) for k, v in result.scores.items()}
+        new_overall = round(sum(new_scores.values()) / len(new_scores), 1)
+        # 이유에 안내 한 줄 덧붙이기(중복 방지)
+        new_reasons = dict(result.reasons)
+        for k in new_reasons:
+            if note not in new_reasons[k]:
+                new_reasons[k] = f"{note} {new_reasons[k]}".strip()
+        # 개선점에 핵심 안내 추가
+        new_improvements = list(result.improvements or [])
+        guide = "질문 의도에 맞춰, 구체적인 경험이나 생각을 한두 문장 이상으로 답해 보세요."
+        if guide not in new_improvements:
+            new_improvements.insert(0, guide)
+
+        return EvaluationResult(
+            scores=new_scores,
+            overall_score=new_overall,
+            grade=self._to_grade(new_overall),
+            reasons=new_reasons,
+            strengths=result.strengths,
+            improvements=new_improvements,
+            model_answer=result.model_answer,
+            raw=result.raw,
+        )
 
     def _build_prompt(self, question: str, answer: str, job_role: str) -> str:
-        # ★ 한국어 강제 + 모범답안 길이 제한을 사용자 프롬프트에도 명시
+        # ★ 한국어 강제 + 채점 기준표(루브릭) + 동문서답/빈답 가드
         return f"""[면접 질문]
 {question}
 
@@ -172,6 +229,22 @@ class ContentEvaluator:
 1. 논리성     : 답변이 논리적으로 구성되어 있고 일관성이 있는가
 2. 구체성     : 구체적인 경험·수치·사례가 포함되어 있는가
 3. 직무적합도 : 지원 직무와 연관된 역량이 드러나는가
+
+[채점 기준표 — 반드시 이 기준을 지켜 점수를 매기세요]
+- 85~100점: 질문에 정확히 답하고, 구체적 경험·근거가 풍부하며, 논리가 명확함.
+- 70~84점 : 질문에 잘 답했고 흐름도 자연스러우나, 구체적 사례나 깊이가 조금 아쉬움.
+- 55~69점 : 질문 의도엔 맞으나 내용이 다소 일반적이고 근거가 부족함. (평범한 답변의 기본 구간)
+- 35~54점 : 답은 했으나 추상적이고 질문과 느슨하게만 연결됨.
+- 16~34점 : 답변이 매우 짧거나 성의가 부족하고, 질문에 거의 답하지 못함.
+- 0~15점  : 질문과 전혀 무관한 동문서답이거나, 의미 없는 말이거나, 사실상 답을 하지 않음
+            (예: "없어요", "모르겠어요", "글쎄요", 질문과 상관없는 엉뚱한 말).
+
+[중요 지침]
+- 기본 태도는 '격려하는 코치'입니다. 제대로 답한 부분은 따뜻하게 인정하고, 점수는 너무 인색하지 않게 줍니다.
+- 다만 위 채점 기준표는 반드시 지킵니다. 특히 질문에 답하지 못했거나 동문서답인 경우,
+  격려하려는 마음 때문에 점수를 후하게 주지 마세요. 그런 답변은 정직하게 0~15점을 줍니다.
+- reasons(이유)는 친절하고 구체적으로 쓰되, 부족한 점은 분명히 짚어 줍니다.
+- 답변이 부실하더라도 strengths(강점)에는 격려가 될 만한 점을 한 가지는 찾아 적습니다.
 
 [작성 규칙]
 - 모든 내용은 반드시 한국어로만 작성합니다. (중국어·일본어·영어 문장 금지)
